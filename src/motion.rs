@@ -169,9 +169,9 @@ pub struct SwimPose {
     pub feeding_phase: Option<f64>,
     /// How far the mouth is open, from zero closed to one wide open.
     pub mouth_opening: f64,
-    /// How hard the koi is pushing the water this frame, from zero gliding to one at
-    /// the peak of a stroke; the wake behind it follows this. Hovering pushes less,
-    /// and deep rest not at all.
+    /// How much wake the koi is leaving this frame, from zero through one: it rises
+    /// with each stroke and fades through the glide. Hovering leaves less, and deep
+    /// rest none.
     pub wake_strength: f64,
 }
 
@@ -219,8 +219,9 @@ pub fn frame_count(behavior: Behavior) -> u32 {
 /// loop. In every behavior the tail lobes bend behind the wave, the side fins' tips
 /// trail their roots, the pelvic fins follow at half the opening, and the whiskers
 /// sway. The mouth breathes while the koi laps, gulps while it rests or feeds, and
-/// takes one slow gulp with deep rest's fin flick. The wake follows the stroke while
-/// the koi laps, a share of the beat while it rests or feeds, and nothing in deep rest.
+/// takes one slow gulp with deep rest's fin flick. The wake rises with each stroke
+/// and fades through the glide while the koi laps, at a share of that while it rests
+/// or feeds, and not at all in deep rest.
 pub fn calculate_swim_pose(behavior: Behavior, frame_index: u32) -> SwimPose {
     let loop_frame_count = frame_count(behavior);
     let loop_frame = frame_index % loop_frame_count;
@@ -334,7 +335,7 @@ fn calculate_rest_drive(loop_frame: u32, depth: f64) -> Drive {
         right_fin_offset_radians: SCULL_SWING_RADIANS * (TAU * frame / SCULL_FRAME_COUNT).sin(),
         feeding_phase: None,
         mouth_opening: (GULPS_PER_LOOP * loop_turn).sin().max(0.0),
-        wake_strength: REST_WAKE_SHARE * stroke,
+        wake_strength: REST_WAKE_SHARE * calculate_wake(frame, STROKE_FRAME_COUNT, STROKE_SHARE),
     }
 }
 
@@ -386,6 +387,19 @@ fn calculate_deep_rest_drive(loop_frame: u32) -> Drive {
         feeding_phase: None,
         mouth_opening,
         wake_strength: 0.0,
+    }
+}
+
+/// Wake strength at a frame: rises through the first half of the beat to one, then
+/// fades over WAKE_FADE_SHARE of the cycle, so it is gone before the next beat.
+fn calculate_wake(frame: f64, cycle_frame_count: f64, beat_share: f64) -> f64 {
+    const WAKE_FADE_SHARE: f64 = 0.6;
+    let cycle_fraction = frame.rem_euclid(cycle_frame_count) / cycle_frame_count;
+    let rise_share = beat_share / 2.0;
+    if cycle_fraction < rise_share {
+        (PI / 2.0 * cycle_fraction / rise_share).sin()
+    } else {
+        (1.0 - (cycle_fraction - rise_share) / WAKE_FADE_SHARE).max(0.0)
     }
 }
 
@@ -442,7 +456,7 @@ impl LapStyle {
             right_fin_offset_radians: self.inside_flare_radians + scull,
             feeding_phase: None,
             mouth_opening: BREATH_OPENING * breath * breath,
-            wake_strength: stroke,
+            wake_strength: calculate_wake(frame, self.stroke_frame_count, self.stroke_share),
         }
     }
 

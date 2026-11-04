@@ -15,7 +15,9 @@
 //! The pond from [`crate::pond`] is drawn in frame space, so neither framing nor depth
 //! moves it: rocks lie on the bottom under the koi, on an inner ring the koi laps over,
 //! and lily pads float on the surface over it, in the corners and at the edges, where
-//! the koi passes under a pad's edge only on its widest laps.
+//! the koi passes under a pad's edge only on its widest laps. While the koi swims, its
+//! wake trails the tail and water marks shimmer across the surface, over the rocks and
+//! under the pads; the still shows neither.
 //!
 //! Every growth level shares one square native canvas of [`FRAME_WIDTH_PIXELS`] by
 //! [`FRAME_HEIGHT_PIXELS`], which the encoders in [`crate::output`] scale up exactly.
@@ -73,6 +75,7 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
         &koi_anatomy,
         &STILL_POSE,
         Framing::CenterOnKoi,
+        None,
     )
 }
 
@@ -83,8 +86,10 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
 /// on the koi's sweep, and its drift shrinks only as far as the largest koi need to
 /// stay inside. The view never follows the fins, so it never shakes. Under water the koi
 /// turns toward water blue and partly drops out, more with depth; the pond stays as it
-/// is, fixed in the frame across the loop. Identical inputs produce identical pixels
-/// without I/O, clock reads, or input mutation.
+/// is, fixed in the frame across the loop. The koi's wake trails its tail, and water
+/// marks seeded by the account shimmer across the water once per loop; the still has
+/// neither. Identical inputs produce identical pixels without I/O, clock reads, or
+/// input mutation.
 pub fn render_swim_frame(
     koi_development: &KoiDevelopment,
     koi_body: KoiBody,
@@ -109,6 +114,7 @@ pub fn render_swim_frame(
         &koi_anatomy,
         &swim_pose,
         Framing::At(pose_center),
+        Some(f64::from(frame_index % frame_count(behavior)) / f64::from(frame_count(behavior))),
     )
 }
 
@@ -197,6 +203,7 @@ fn render_pose(
     koi_anatomy: &KoiAnatomy,
     swim_pose: &SwimPose,
     framing: Framing,
+    water_phase: Option<f64>,
 ) -> KoiFrame {
     let koi_coat = KoiCoat::new(koi_development, koi_body, |along_fraction| {
         calculate_body_half_width(along_fraction, koi_anatomy)
@@ -273,7 +280,11 @@ fn render_pose(
         &fin_curves,
         pose_center,
         swim_pose.wake_strength,
+        swim_pose.wave_phase_radians,
     );
+    if let Some(water_phase) = water_phase {
+        paint_water_marks(&mut rgba_pixels, koi_development.identity_seed, water_phase);
+    }
     let pond = lay_out_pond(koi_development);
     let rock_layer = paint_pond_layer(&pond.rocks);
     for (pixel_channels, &rock_channels) in rgba_pixels.iter_mut().zip(&rock_layer) {
@@ -630,29 +641,34 @@ fn paint_feeding(
 
 /// Pale ripple colors for the wake, lighter nearer the tail.
 const WAKE_COLORS: [[u8; 4]; 2] = [[150, 205, 235, 255], [100, 170, 220, 255]];
+/// Pale colors for the water marks: the crest of each mark and its trough.
+const WATER_MARK_COLORS: [[u8; 4]; 2] = [[175, 218, 240, 255], [130, 190, 230, 255]];
 
-/// The wake: a few shallow chevrons trailing behind the tail fin on the water, each
-/// opening backward and spreading and thinning with distance. A stroke leaves up to
-/// WAKE_RIPPLE_COUNT ripples and a glide none; each ripple is dithered by how far it
-/// has spread. Ripples fill only empty water, so they never touch the koi, and they
-/// are painted after the depth tint so they stay on the surface.
+/// The wake: shallow chevrons of ripples trailing behind the tail fin on the water,
+/// each opening backward and spreading and thinning with distance. The wake strength
+/// sets how many there are and how full; they drift back with the body wave, so each
+/// stroke's ripples move away from the tail and fade through the glide. Ripples fill
+/// only empty water, so they never touch the koi, and they are painted after the
+/// depth tint so they stay on the surface.
 fn paint_wake(
     rgba_pixels: &mut [[u8; 4]],
     body_spine: &[CurvePoint],
     fin_curves: &[Vec<CurvePoint>],
     pose_center: [f64; 2],
     wake_strength: f64,
+    drift_phase_radians: f64,
 ) {
     const VISIBLE_STRENGTH: f64 = 0.05;
-    const WAKE_RIPPLE_COUNT: usize = 3;
+    const WAKE_RIPPLE_COUNT: usize = 5;
     const FIRST_RIPPLE_GAP_PIXELS: f64 = 3.0;
-    const RIPPLE_SPACING_PIXELS: f64 = 4.0;
-    /// Ripple half widths across the wake, growing as it spreads.
-    const RIPPLE_HALF_WIDTHS_PIXELS: [f64; WAKE_RIPPLE_COUNT] = [1.0, 2.0, 3.0];
+    const RIPPLE_SPACING_PIXELS: f64 = 4.5;
+    /// Ripple half widths across the wake, from the nearest to the farthest.
+    const NEAREST_HALF_WIDTH_PIXELS: f64 = 1.0;
+    const FARTHEST_HALF_WIDTH_PIXELS: f64 = 5.0;
     /// Each ripple bends back this far per pixel across, so it opens behind the koi.
-    const CHEVRON_SWEEP: f64 = 0.5;
+    const CHEVRON_SWEEP: f64 = 0.6;
     /// The farthest ripple keeps this share of its pixels at full strength.
-    const FARTHEST_RIPPLE_SHARE: f64 = 0.5;
+    const FARTHEST_RIPPLE_SHARE: f64 = 0.35;
     if wake_strength <= VISIBLE_STRENGTH {
         return;
     }
@@ -671,16 +687,26 @@ fn paint_wake(
     let forward_direction = calculate_forward_direction(body_spine, body_spine.len() - 1);
     let backward_direction = [-forward_direction[0], -forward_direction[1]];
     let across_direction = [-backward_direction[1], backward_direction[0]];
-    let ripple_count = (wake_strength * WAKE_RIPPLE_COUNT as f64).ceil() as usize;
-    let frame_width = FRAME_WIDTH_PIXELS as usize;
-    for ripple_index in 0..ripple_count.min(WAKE_RIPPLE_COUNT) {
-        let distance_pixels = FIRST_RIPPLE_GAP_PIXELS + RIPPLE_SPACING_PIXELS * ripple_index as f64;
-        let spread_fraction = (ripple_index + 1) as f64 / WAKE_RIPPLE_COUNT as f64;
-        // Nearer ripples are brighter and fuller; farther ones thin out as they spread.
+    let drift_pixels = (drift_phase_radians / TAU).rem_euclid(1.0) * RIPPLE_SPACING_PIXELS;
+    let wake_length_pixels = RIPPLE_SPACING_PIXELS * WAKE_RIPPLE_COUNT as f64;
+    let ripple_count =
+        ((wake_strength * WAKE_RIPPLE_COUNT as f64).ceil() as usize).clamp(1, WAKE_RIPPLE_COUNT);
+    for ripple_index in 0..ripple_count {
+        let distance_pixels =
+            FIRST_RIPPLE_GAP_PIXELS + RIPPLE_SPACING_PIXELS * ripple_index as f64 + drift_pixels;
+        // How far the ripple has spread, from zero at the tail to one at the wake's end,
+        // measured from where it is, so a ripple drifting into the next place looks the
+        // same as the ripple that was there.
+        let spread_fraction =
+            ((distance_pixels - FIRST_RIPPLE_GAP_PIXELS) / wake_length_pixels).min(1.0);
         let dither_limit = wake_strength * (1.0 - (1.0 - FARTHEST_RIPPLE_SHARE) * spread_fraction);
-        let ripple_color = WAKE_COLORS[usize::from(ripple_index > 0)];
-        let half_width_pixels = RIPPLE_HALF_WIDTHS_PIXELS[ripple_index];
-        let mut across_pixels = -half_width_pixels;
+        let ripple_color = WAKE_COLORS[usize::from(spread_fraction > 0.3)];
+        let half_width_pixels = interpolate(
+            NEAREST_HALF_WIDTH_PIXELS,
+            FARTHEST_HALF_WIDTH_PIXELS,
+            spread_fraction,
+        );
+        let mut across_pixels = -half_width_pixels.floor();
         while across_pixels <= half_width_pixels {
             let swept_distance_pixels = distance_pixels + CHEVRON_SWEEP * across_pixels.abs();
             let ripple_point = [0, 1].map(|axis_index| {
@@ -691,19 +717,86 @@ fn paint_wake(
                     + frame_sizes[axis_index] / 2.0
             });
             across_pixels += 1.0;
-            let [pixel_x, pixel_y] = ripple_point.map(f64::floor);
-            if !(0.0..frame_sizes[0]).contains(&pixel_x)
-                || !(0.0..frame_sizes[1]).contains(&pixel_y)
-            {
-                continue;
-            }
-            let pixel_index = pixel_y as usize * frame_width + pixel_x as usize;
-            if rgba_pixels[pixel_index][3] == 0
-                && calculate_dither_threshold([pixel_x as u32, pixel_y as u32]) < dither_limit
-            {
-                rgba_pixels[pixel_index] = ripple_color;
-            }
+            paint_water_pixel(rgba_pixels, ripple_point, ripple_color, dither_limit);
         }
+    }
+}
+
+/// Water marks: short wavy strokes scattered over the water, placed by the account
+/// seed so every pond differs, sliding and breathing once per loop so they shimmer.
+/// They fill only empty water, after the koi and its wake, so the koi passes over
+/// them and the rocks lie under them.
+fn paint_water_marks(rgba_pixels: &mut [[u8; 4]], identity_seed: u64, water_phase: f64) {
+    const MARK_COUNT: usize = 14;
+    const MIN_HALF_WIDTH_PIXELS: u64 = 3;
+    const EXTRA_HALF_WIDTH_PIXELS: u64 = 4;
+    const WAVE_HEIGHT_PIXELS: f64 = 1.2;
+    const WAVE_RADIANS_PER_PIXEL: f64 = 0.8;
+    const SHIMMER_CYCLES_PER_LOOP: f64 = 1.0;
+    /// A mark never drops below this share of its pixels as it breathes.
+    const DIMMEST_SHIMMER: f64 = 0.55;
+    /// The ends of a mark thin out by this share.
+    const END_FADE: f64 = 0.5;
+    /// Marks stay this far from the frame edge, so none is cut off.
+    const EDGE_MARGIN_PIXELS: u64 = 10;
+    let mut seed_state = identity_seed ^ 0xD1B5_4A32_D192_ED03;
+    let mut next_number = || {
+        seed_state = seed_state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        seed_state >> 33
+    };
+    for _ in 0..MARK_COUNT {
+        let center_x = (EDGE_MARGIN_PIXELS
+            + next_number() % (u64::from(FRAME_WIDTH_PIXELS) - 2 * EDGE_MARGIN_PIXELS))
+            as f64
+            + 0.5;
+        let center_y = (EDGE_MARGIN_PIXELS
+            + next_number() % (u64::from(FRAME_HEIGHT_PIXELS) - 2 * EDGE_MARGIN_PIXELS))
+            as f64
+            + 0.5;
+        let half_width_pixels =
+            (MIN_HALF_WIDTH_PIXELS + next_number() % (EXTRA_HALF_WIDTH_PIXELS + 1)) as i64;
+        let mark_phase_radians = (next_number() % 16) as f64 * TAU / 16.0;
+        let shimmer_radians = mark_phase_radians + water_phase * TAU * SHIMMER_CYCLES_PER_LOOP;
+        let shimmer =
+            DIMMEST_SHIMMER + (1.0 - DIMMEST_SHIMMER) * (0.5 + 0.5 * shimmer_radians.sin());
+        for across_pixels in -half_width_pixels..=half_width_pixels {
+            let wave = (across_pixels as f64 * WAVE_RADIANS_PER_PIXEL + shimmer_radians).sin();
+            let end_fraction = across_pixels as f64 / half_width_pixels as f64;
+            let dither_limit = shimmer * (1.0 - END_FADE * end_fraction * end_fraction);
+            paint_water_pixel(
+                rgba_pixels,
+                [
+                    center_x + across_pixels as f64,
+                    center_y + (wave * WAVE_HEIGHT_PIXELS).round(),
+                ],
+                WATER_MARK_COLORS[usize::from(wave <= 0.0)],
+                dither_limit,
+            );
+        }
+    }
+}
+
+/// Color one empty pixel of water at a frame position, if the dither allows it. The
+/// outermost row and column stay clear, as they do around the koi.
+fn paint_water_pixel(
+    rgba_pixels: &mut [[u8; 4]],
+    frame_point: [f64; 2],
+    color: [u8; 4],
+    dither_limit: f64,
+) {
+    let [pixel_x, pixel_y] = frame_point.map(f64::floor);
+    if !(1.0..f64::from(FRAME_WIDTH_PIXELS) - 1.0).contains(&pixel_x)
+        || !(1.0..f64::from(FRAME_HEIGHT_PIXELS) - 1.0).contains(&pixel_y)
+    {
+        return;
+    }
+    let pixel_index = pixel_y as usize * FRAME_WIDTH_PIXELS as usize + pixel_x as usize;
+    if rgba_pixels[pixel_index][3] == 0
+        && calculate_dither_threshold([pixel_x as u32, pixel_y as u32]) < dither_limit
+    {
+        rgba_pixels[pixel_index] = color;
     }
 }
 
