@@ -1,5 +1,5 @@
 //! A curved koi colored from its languages on a chosen body, with Classic shading and
-//! transparent surroundings.
+//! transparent surroundings, in a pond of lily pads and rocks.
 //!
 //! The body and fins follow sampled curves, with shading that follows the body surface
 //! and fin rays that follow each fin's direction. The head widens from a round nose
@@ -12,10 +12,16 @@
 //! maximum form keeps its anatomy at higher totals. Quiet days alone do not change the
 //! base anatomy. The pose and framing account for the body and fins.
 //!
+//! The pond from [`crate::pond`] is drawn in frame space, so neither framing nor depth
+//! moves it: rocks lie on the bottom under the koi, on an inner ring the koi laps over,
+//! and lily pads float on the surface over it, in the corners and at the edges, where
+//! the koi passes under a pad's edge only on its widest laps.
+//!
 //! Every growth level shares one square native canvas of [`FRAME_WIDTH_PIXELS`] by
 //! [`FRAME_HEIGHT_PIXELS`], which the encoders in [`crate::output`] scale up exactly.
 //! Anatomical proportions live here; pigments, bodies, and palettes in [`crate::coat`];
-//! streak mark strengths in [`crate::markings`]; poses in [`crate::motion`].
+//! streak mark strengths in [`crate::markings`]; poses in [`crate::motion`]; which pond
+//! objects there are, and how large, in [`crate::pond`].
 
 use std::f64::consts::{PI, TAU};
 
@@ -25,6 +31,7 @@ use crate::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, YOUNG_SHAPE_CONTRIBUTIONS, calculate_growth_fraction,
 };
 use crate::motion::{Course, STILL_POSE, SwimPose, calculate_swim_pose, frame_count};
+use crate::pond::{PondObject, PondObjectKind, PondObjectSize, SLOT_COUNT, lay_out_pond};
 
 /// Width of the native canvas every koi is drawn on, at every growth level.
 pub const FRAME_WIDTH_PIXELS: u32 = 256;
@@ -55,8 +62,9 @@ impl KoiFrame {
 /// the caller's chosen body. Contribution totals set its size and how far its colors
 /// have come in. The account seed places patches in body coordinates, so growth does
 /// not reroll the pattern. Streak marks follow the development's streaks as of its
-/// observation date. Identical inputs produce identical pixels without I/O, clock
-/// reads, or input mutation.
+/// observation date. The week's pond surrounds it, rocks under the koi and lily pads
+/// over it. Identical inputs produce identical pixels without I/O, clock reads, or
+/// input mutation.
 pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFrame {
     let koi_anatomy = calculate_anatomy(koi_development.total_contributions);
     render_pose(
@@ -74,8 +82,9 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
 /// koi swim a tighter lap so every size fits. A hovering loop is framed once, centered
 /// on the koi's sweep, and its drift shrinks only as far as the largest koi need to
 /// stay inside. The view never follows the fins, so it never shakes. Under water the koi
-/// turns toward water blue and partly drops out, more with depth. Identical inputs
-/// produce identical pixels without I/O, clock reads, or input mutation.
+/// turns toward water blue and partly drops out, more with depth; the pond stays as it
+/// is, fixed in the frame across the loop. Identical inputs produce identical pixels
+/// without I/O, clock reads, or input mutation.
 pub fn render_swim_frame(
     koi_development: &KoiDevelopment,
     koi_body: KoiBody,
@@ -258,7 +267,190 @@ fn render_pose(
     if swim_pose.depth > 0.0 {
         paint_depth(&mut rgba_pixels, &fish_pixel_mask, swim_pose.depth);
     }
+    let pond = lay_out_pond(koi_development);
+    let rock_layer = paint_pond_layer(&pond.rocks);
+    for (pixel_channels, &rock_channels) in rgba_pixels.iter_mut().zip(&rock_layer) {
+        if pixel_channels[3] == 0 {
+            *pixel_channels = rock_channels;
+        }
+    }
+    let lily_pad_layer = paint_pond_layer(&pond.lily_pads);
+    for (pixel_channels, &lily_pad_channels) in rgba_pixels.iter_mut().zip(&lily_pad_layer) {
+        if lily_pad_channels[3] != 0 {
+            *pixel_channels = lily_pad_channels;
+        }
+    }
     KoiFrame { rgba_pixels }
+}
+
+/// Lily pad slots from the frame center, newest first: the four corners, then the four
+/// edge midpoints, clockwise from the top right. The corners lie beyond the koi's widest
+/// lap; the koi passes under the edge of an edge-slot pad on its widest laps.
+const LILY_PAD_SLOTS: [[f64; 2]; SLOT_COUNT] = [
+    [104.0, -104.0],
+    [104.0, 104.0],
+    [-104.0, 104.0],
+    [-104.0, -104.0],
+    [0.0, -112.0],
+    [112.0, 0.0],
+    [0.0, 112.0],
+    [-112.0, 0.0],
+];
+/// Slots at the corners, where a large lily pad still clears the koi.
+const CORNER_SLOT_COUNT: usize = 4;
+/// Each variant moves its object a few pixels off its slot, so the pond looks
+/// scattered rather than set out on rings.
+const VARIANT_NUDGES_PIXELS: [[f64; 2]; 4] = [[0.0, 0.0], [5.0, -3.0], [-4.0, 4.0], [3.0, 5.0]];
+const LILY_PAD_HEIGHT_PER_WIDTH: f64 = 0.8;
+/// The notch is a wedge cut from the rim toward the center, turned by the variant.
+const LILY_PAD_NOTCH_HALF_ANGLE_RADIANS: f64 = 0.38;
+const LILY_PAD_NOTCH_INNER_FRACTION: f64 = 0.25;
+/// The vein runs from the center away from the notch.
+const LILY_PAD_VEIN_HALF_WIDTH_FRACTION: f64 = 0.08;
+const LILY_PAD_RAMP: [[u8; 4]; 3] = [[38, 92, 66, 255], [62, 137, 72, 255], [99, 199, 77, 255]];
+/// Rock slots on an inner ring between the lily pad slots, inside the koi's widest lap,
+/// so the koi swims over them. Angles are clockwise on screen from the right.
+const ROCK_RING_RADIUS_PIXELS: f64 = 105.0;
+const ROCK_SLOT_ANGLES_DEGREES: [f64; SLOT_COUNT] =
+    [-67.5, 22.5, 112.5, 202.5, -22.5, 67.5, 157.5, 247.5];
+const ROCK_HEIGHT_PER_WIDTH: f64 = 0.65;
+/// Each variant squashes the rock a little flatter and wider, so no two rocks match.
+const ROCK_VARIANT_SQUASH: f64 = 0.08;
+/// The underside sits flatter than the top, as a rock settles.
+const ROCK_UNDERSIDE_HEIGHT_FRACTION: f64 = 0.7;
+const ROCK_RAMP: [[u8; 4]; 3] = [
+    [58, 68, 102, 255],
+    [90, 105, 136, 255],
+    [139, 155, 180, 255],
+];
+
+fn lily_pad_half_width(size: PondObjectSize) -> f64 {
+    match size {
+        PondObjectSize::Small => 5.0,
+        PondObjectSize::Medium => 8.0,
+        PondObjectSize::Large => 11.0,
+    }
+}
+
+fn rock_half_width(size: PondObjectSize) -> f64 {
+    match size {
+        PondObjectSize::Small => 4.0,
+        PondObjectSize::Medium => 6.0,
+        PondObjectSize::Large => 8.0,
+    }
+}
+
+/// Paint the given pond objects on an empty layer and outline them, so they can be
+/// laid under or over the koi without changing it.
+fn paint_pond_layer(pond_objects: &[PondObject]) -> Vec<[u8; 4]> {
+    let mut layer_pixels = vec![[0; 4]; (FRAME_WIDTH_PIXELS * FRAME_HEIGHT_PIXELS) as usize];
+    for pond_object in pond_objects {
+        match pond_object.kind {
+            PondObjectKind::LilyPad => paint_lily_pad(&mut layer_pixels, pond_object),
+            PondObjectKind::Rock => paint_rock(&mut layer_pixels, pond_object),
+        }
+    }
+    paint_outline(&mut layer_pixels);
+    layer_pixels
+}
+
+/// A lily pad: an ellipse lit from the upper left, with a wedge notch toward the
+/// variant's angle and a dark vein running away from it. A large pad on an edge slot
+/// is drawn medium, since only a corner has room for it.
+fn paint_lily_pad(layer_pixels: &mut [[u8; 4]], lily_pad: &PondObject) {
+    let size = if lily_pad.slot >= CORNER_SLOT_COUNT {
+        lily_pad.size.min(PondObjectSize::Medium)
+    } else {
+        lily_pad.size
+    };
+    let half_width = lily_pad_half_width(size);
+    let [slot_x, slot_y] = LILY_PAD_SLOTS[lily_pad.slot % SLOT_COUNT];
+    let [nudge_x, nudge_y] = VARIANT_NUDGES_PIXELS[usize::from(lily_pad.variant) % 4];
+    let notch_angle_radians = f64::from(lily_pad.variant) * PI / 2.0 + PI / 4.0;
+    let notch_direction = [notch_angle_radians.cos(), notch_angle_radians.sin()];
+    paint_ellipse(
+        layer_pixels,
+        [slot_x + nudge_x, slot_y + nudge_y],
+        [half_width, half_width * LILY_PAD_HEIGHT_PER_WIDTH],
+        |[offset_x, offset_y], pixel_position| {
+            let radius_fraction = offset_x.hypot(offset_y);
+            let angle_from_notch =
+                (offset_y.atan2(offset_x) - notch_angle_radians + PI).rem_euclid(TAU) - PI;
+            if radius_fraction > LILY_PAD_NOTCH_INNER_FRACTION
+                && angle_from_notch.abs() < LILY_PAD_NOTCH_HALF_ANGLE_RADIANS
+            {
+                return None;
+            }
+            let along_vein = -(offset_x * notch_direction[0] + offset_y * notch_direction[1]);
+            let across_vein = (offset_x * notch_direction[1] - offset_y * notch_direction[0]).abs();
+            if along_vein > 0.1 && across_vein < LILY_PAD_VEIN_HALF_WIDTH_FRACTION {
+                return Some(LILY_PAD_RAMP[0]);
+            }
+            let brightness = 0.55 + 0.45 * (-0.45 * offset_x - 0.6 * offset_y);
+            Some(choose_shade(&LILY_PAD_RAMP, brightness, pixel_position))
+        },
+    );
+}
+
+/// A rock: a flattened ellipse lit from above, squashed a little more by each
+/// variant, with a flatter underside.
+fn paint_rock(layer_pixels: &mut [[u8; 4]], rock: &PondObject) {
+    let squash = ROCK_VARIANT_SQUASH * f64::from(rock.variant);
+    let half_width = rock_half_width(rock.size) * (1.0 + squash);
+    let half_height = rock_half_width(rock.size) * ROCK_HEIGHT_PER_WIDTH * (1.0 - squash);
+    let slot_angle_radians = ROCK_SLOT_ANGLES_DEGREES[rock.slot % SLOT_COUNT].to_radians();
+    let [nudge_x, nudge_y] = VARIANT_NUDGES_PIXELS[usize::from(rock.variant) % 4];
+    let center = [
+        ROCK_RING_RADIUS_PIXELS * slot_angle_radians.cos() + nudge_x,
+        ROCK_RING_RADIUS_PIXELS * slot_angle_radians.sin() + nudge_y,
+    ];
+    paint_ellipse(
+        layer_pixels,
+        center,
+        [half_width, half_height],
+        |[offset_x, offset_y], pixel_position| {
+            if offset_y > 0.0 && offset_x.hypot(offset_y / ROCK_UNDERSIDE_HEIGHT_FRACTION) > 1.0 {
+                return None;
+            }
+            let brightness = 0.5 + 0.5 * (-0.3 * offset_x - 0.75 * offset_y);
+            Some(choose_shade(&ROCK_RAMP, brightness, pixel_position))
+        },
+    );
+}
+
+/// Visit every pixel whose center an ellipse covers, giving `paint` the pixel's offset
+/// from the ellipse's center as a share of each half extent, and set the pixels it
+/// colors. The center is given from the frame center.
+fn paint_ellipse(
+    layer_pixels: &mut [[u8; 4]],
+    center_from_frame_center: [f64; 2],
+    half_extents: [f64; 2],
+    mut paint: impl FnMut([f64; 2], [u32; 2]) -> Option<[u8; 4]>,
+) {
+    let frame_width = FRAME_WIDTH_PIXELS as usize;
+    let center = [
+        center_from_frame_center[0] + f64::from(FRAME_WIDTH_PIXELS) / 2.0,
+        center_from_frame_center[1] + f64::from(FRAME_HEIGHT_PIXELS) / 2.0,
+    ];
+    let first_x = (center[0] - half_extents[0]).floor().max(0.0) as usize;
+    let last_x = ((center[0] + half_extents[0]).ceil().max(0.0) as usize).min(frame_width - 1);
+    let first_y = (center[1] - half_extents[1]).floor().max(0.0) as usize;
+    let last_y = ((center[1] + half_extents[1]).ceil().max(0.0) as usize)
+        .min(FRAME_HEIGHT_PIXELS as usize - 1);
+    for pixel_y in first_y..=last_y {
+        for pixel_x in first_x..=last_x {
+            let offset = [
+                (pixel_x as f64 + 0.5 - center[0]) / half_extents[0],
+                (pixel_y as f64 + 0.5 - center[1]) / half_extents[1],
+            ];
+            if offset[0].hypot(offset[1]) > 1.0 {
+                continue;
+            }
+            if let Some(pixel_color) = paint(offset, [pixel_x as u32, pixel_y as u32]) {
+                layer_pixels[pixel_y * frame_width + pixel_x] = pixel_color;
+            }
+        }
+    }
 }
 
 /// Where the mouth opens: on the snout's center line, just inside its front.

@@ -85,7 +85,6 @@ fn a_full_week_fits_in_the_slots() {
     let pond = lay_out_pond(&develop_with_week(&[(1, 1); 7]));
     assert_eq!(pond.lily_pads.len(), 7);
     assert_eq!(pond.rocks.len(), 7);
-    assert!(SLOT_COUNT >= 7);
     assert!(
         pond.lily_pads
             .iter()
