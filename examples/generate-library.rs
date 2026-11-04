@@ -2,7 +2,7 @@ use std::{env, error::Error, fs, path::Path, process::ExitCode};
 
 use chrono::{Datelike, Days, NaiveDate};
 use git_koi::coat::KoiBody;
-use git_koi::history::{AccountSnapshot, ContributionWeek, LanguageColor};
+use git_koi::history::{AccountSnapshot, ContributionWeek, DayActivity, LanguageColor};
 use git_koi::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS, RecentStreak,
     YOUNG_SHAPE_CONTRIBUTIONS, derive_koi_development,
@@ -87,6 +87,16 @@ const MARKING_SAMPLES: [(&str, usize, Option<RecentSample>); 12] = [
     ("longest-52-weeks", 52, Some(ended_long_ago(52))),
     ("longest-104-weeks", 104, Some(ended_long_ago(104))),
     ("longest-208-weeks", 208, Some(ended_long_ago(208))),
+];
+/// Pond samples: name, then issues and pull requests opened on each of the last seven
+/// days, oldest first. One row of six fills one overview row.
+const POND_SAMPLES: [(&str, [u32; 7], [u32; 7]); 6] = [
+    ("quiet-week", [0; 7], [0; 7]),
+    ("one-issue-yesterday", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
+    ("three-issues-yesterday", [0, 0, 0, 0, 0, 0, 3], [0; 7]),
+    ("six-issues-yesterday", [0, 0, 0, 0, 0, 0, 6], [0; 7]),
+    ("one-pull-request-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
+    ("busy-week", [1, 0, 2, 4, 0, 3, 1], [0, 1, 1, 0, 4, 0, 2]),
 ];
 const GROWTH_SAMPLES: [u64; 6] = [
     0,
@@ -202,6 +212,24 @@ fn generate_library(output_directory: &Path) -> Result<(), Box<dyn Error>> {
         }
     }
     write_overviews(output_directory, "markings", &marking_frames)?;
+    set_streaks(&mut koi_development, 4, Some(ended_long_ago(4)));
+    index_markdown.push_str(&format!(
+        "## Pond\n\n{body_mix_description}, at {ADULT_CONTRIBUTIONS} contributions. Lily pads \
+        for the week's issues and rocks for its pull requests, from a quiet week to a busy one.\n\n"
+    ));
+    let mut pond_frames = Vec::new();
+    for (sample_name, issues_per_day, pull_requests_per_day) in POND_SAMPLES {
+        set_week(&mut koi_development, issues_per_day, pull_requests_per_day);
+        pond_frames.push(render_sample(
+            output_directory,
+            &koi_development,
+            KoiBody::default(),
+            &format!("pond-{sample_name}"),
+            &capitalize(&sample_name.replace('-', " ")),
+            &mut index_markdown,
+        )?);
+    }
+    write_overviews(output_directory, "pond", &pond_frames)?;
     write_artifact(
         output_directory,
         "README.md",
@@ -251,6 +279,22 @@ fn set_streaks(
             ended_on: koi_development.observed_on - Days::new(days_since_end),
         },
     });
+}
+
+/// Replace the development's week with the given counts, oldest first, ending on the
+/// observation date.
+fn set_week(
+    koi_development: &mut KoiDevelopment,
+    issues_per_day: [u32; 7],
+    pull_requests_per_day: [u32; 7],
+) {
+    koi_development.daily_activity = (0..7)
+        .map(|day_index| DayActivity {
+            date: koi_development.observed_on - Days::new(6 - day_index as u64),
+            issues_opened: issues_per_day[day_index],
+            pull_requests_opened: pull_requests_per_day[day_index],
+        })
+        .collect();
 }
 
 /// A 13-week streak that ended some days ago, so its fins are fading.
@@ -363,11 +407,12 @@ fn build_index_header(identity_seed: u64) -> String {
         from left to right, and rows follow the mix or body order. These are samples of\n\
         continuous growth. The markings overview follows the streak marking sections in\n\
         rows of six: current streaks, longest streaks, then bodies without and with\n\
-        marks.\n\n\
+        marks. The pond overview is one row, from a quiet week to a busy one.\n\n\
         Mixes: [light overview](overview-light.png) · [dark overview](overview-dark.png)\n\n\
         Bodies: [light overview](bodies-light.png) · [dark overview](bodies-dark.png)\n\n\
         Streak markings: [light overview](markings-light.png) ·\n\
         [dark overview](markings-dark.png)\n\n\
+        Pond: [light overview](pond-light.png) · [dark overview](pond-dark.png)\n\n\
         Native canvas: {FRAME_WIDTH_PIXELS} × {FRAME_HEIGHT_PIXELS}.\n\n\
         PNG and SVG exports: {STATIC_WIDTH_PIXELS} × {STATIC_HEIGHT_PIXELS}.\n\n\
         Identity seed: {identity_seed}.\n\n"
