@@ -1,8 +1,9 @@
 # Git koi
 
 Git koi draws a pixel-art koi from a GitHub account's public activity. Its
-languages color it, its contributions grow it, its streaks mark it, and the day
-that just ended decides how it swims. A nightly workflow puts the koi on a
+languages color it, its contributions grow it, its streaks mark it, the day that
+just ended decides how it swims, and the week's issues and pull requests float
+lily pads and settle rocks around it. A nightly workflow puts the koi on a
 profile README as a looping GIF, the same tool runs from the command line, and
 the Rust library underneath is published on crates.io.
 

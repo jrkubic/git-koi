@@ -4,16 +4,196 @@ use std::io::Cursor;
 use chrono::{Datelike, Days, NaiveDate};
 use git_koi::behavior::Behavior;
 use git_koi::coat::KoiBody;
-use git_koi::history::{AccountSnapshot, ContributionDay, ContributionWeek, LanguageColor};
+use git_koi::history::{
+    AccountSnapshot, ContributionDay, ContributionWeek, DayActivity, LanguageColor,
+};
 use git_koi::koi::{
     ADULT_CONTRIBUTIONS, FULL_COLOR_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS,
     RecentStreak, derive_koi_development,
 };
 use git_koi::motion::frame_count;
-use git_koi::output::encode_png;
+use git_koi::output::{encode_gif, encode_png};
 use git_koi::render::{
     FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi, render_swim_frame,
 };
+
+/// Pixels farther than this from the frame center are the pond's, never the koi's.
+const KOI_REACH_PIXELS: f64 = 120.0;
+
+#[test]
+fn a_quiet_week_draws_only_the_koi() {
+    let koi_development = read_fixture_development();
+    assert!(koi_development.daily_activity.is_empty());
+    let koi_frame = render_koi(&koi_development, KoiBody::default());
+    assert_eq!(
+        koi_frame,
+        render_koi(&develop_with_pond(&[0; 7], &[0; 7]), KoiBody::default())
+    );
+    assert!(
+        opaque_pixel_positions(&koi_frame)
+            .iter()
+            .all(|&[pixel_x, pixel_y]| distance_from_center(pixel_x, pixel_y) < KOI_REACH_PIXELS)
+    );
+}
+
+#[test]
+fn rocks_lie_under_the_koi() {
+    let quiet_development = develop_with_pond(&[0; 7], &[0; 7]);
+    let rocky_development = develop_with_pond(&[0; 7], &[1, 2, 4, 1, 2, 4, 1]);
+    let mut changed_pixel_count = 0;
+    for frame_index in (0..frame_count(Behavior::Cruise)).step_by(10) {
+        let render_frame = |koi_development| {
+            render_swim_frame(
+                koi_development,
+                KoiBody::default(),
+                Behavior::Cruise,
+                frame_index,
+            )
+        };
+        for (quiet_pixel, rocky_pixel) in pixels(&render_frame(&quiet_development))
+            .iter()
+            .zip(pixels(&render_frame(&rocky_development)))
+        {
+            if *quiet_pixel != rocky_pixel {
+                changed_pixel_count += 1;
+                assert_eq!(quiet_pixel[3], 0, "a rock changed a koi pixel");
+            }
+        }
+    }
+    assert!(changed_pixel_count > 0);
+}
+
+#[test]
+fn lily_pads_float_over_the_koi() {
+    // Medium pads on every slot. The pond is drawn in frame space, so the fixture's
+    // small still koi, centered and clear of the rim, shows the pads as exactly the
+    // pixels the pond added.
+    let quiet_still = pixels(&render_koi(
+        &develop_with_pond(&[0; 7], &[0; 7]),
+        KoiBody::default(),
+    ));
+    let padded_still = pixels(&render_koi(
+        &develop_with_pond(&[2; 7], &[0; 7]),
+        KoiBody::default(),
+    ));
+    // The largest koi's widest laps pass under the edge-slot pads.
+    let mut quiet_development = develop_with_pond(&[0; 7], &[0; 7]);
+    quiet_development.total_contributions = MAX_GROWTH_CONTRIBUTIONS;
+    let mut padded_development = develop_with_pond(&[2; 7], &[0; 7]);
+    padded_development.total_contributions = MAX_GROWTH_CONTRIBUTIONS;
+    let lily_pad_pixels: Vec<(usize, [u8; 4])> = quiet_still
+        .iter()
+        .zip(&padded_still)
+        .enumerate()
+        .filter(|(_, (quiet_pixel, padded_pixel))| quiet_pixel != padded_pixel)
+        .map(|(pixel_index, (quiet_pixel, padded_pixel))| {
+            assert_eq!(quiet_pixel[3], 0);
+            (pixel_index, *padded_pixel)
+        })
+        .collect();
+    assert!(!lily_pad_pixels.is_empty());
+
+    let mut covered_koi_pixel_count = 0;
+    for frame_index in (0..frame_count(Behavior::Cruise)).step_by(5) {
+        let render_frame = |koi_development| {
+            pixels(&render_swim_frame(
+                koi_development,
+                KoiBody::default(),
+                Behavior::Cruise,
+                frame_index,
+            ))
+        };
+        let quiet_frame = render_frame(&quiet_development);
+        let padded_frame = render_frame(&padded_development);
+        for &(pixel_index, lily_pad_pixel) in &lily_pad_pixels {
+            assert_eq!(padded_frame[pixel_index], lily_pad_pixel);
+            if quiet_frame[pixel_index][3] != 0 {
+                covered_koi_pixel_count += 1;
+            }
+        }
+    }
+    assert!(covered_koi_pixel_count > 0, "no lap passed under a pad");
+}
+
+#[test]
+fn pond_objects_grow_with_the_days_count() {
+    let pond_pixel_count = |issues_opened: u32, pull_requests_opened: u32| {
+        collect_opaque_pixel_count(&render_koi(
+            &develop_with_pond(
+                &[0, 0, 0, 0, 0, 0, issues_opened],
+                &[0, 0, 0, 0, 0, 0, pull_requests_opened],
+            ),
+            KoiBody::default(),
+        ))
+    };
+    let koi_only = pond_pixel_count(0, 0);
+    assert!(koi_only < pond_pixel_count(1, 0));
+    assert!(pond_pixel_count(1, 0) < pond_pixel_count(2, 0));
+    assert!(pond_pixel_count(2, 0) < pond_pixel_count(4, 0));
+    assert_eq!(pond_pixel_count(4, 0), pond_pixel_count(9, 0));
+    assert!(koi_only < pond_pixel_count(0, 1));
+    assert!(pond_pixel_count(0, 1) < pond_pixel_count(0, 2));
+    assert!(pond_pixel_count(0, 2) < pond_pixel_count(0, 4));
+}
+
+#[test]
+fn every_behavior_encodes_as_a_gif_with_a_full_pond() {
+    let mut full_development = develop_with_pond(&[4; 7], &[4; 7]);
+    full_development.total_contributions = MAX_GROWTH_CONTRIBUTIONS;
+    for behavior in [
+        Behavior::Cruise,
+        Behavior::Dart,
+        Behavior::SurfaceFeeding,
+        Behavior::Rest,
+        Behavior::DeepRest,
+    ] {
+        let swim_frames: Vec<KoiFrame> = (0..frame_count(behavior))
+            .step_by(15)
+            .map(|frame_index| {
+                render_swim_frame(&full_development, KoiBody::Asagi, behavior, frame_index)
+            })
+            .collect();
+        assert!(encode_gif(&swim_frames).is_ok(), "{behavior:?}");
+    }
+}
+
+/// The fixture development with a week of activity, oldest first, ending on the
+/// observation date.
+fn develop_with_pond(issues_per_day: &[u32], pull_requests_per_day: &[u32]) -> KoiDevelopment {
+    let mut koi_development = read_fixture_development();
+    let day_count = issues_per_day.len().max(pull_requests_per_day.len());
+    koi_development.daily_activity = (0..day_count)
+        .map(|day_index| DayActivity {
+            date: koi_development.observed_on - Days::new((day_count - 1 - day_index) as u64),
+            issues_opened: issues_per_day.get(day_index).copied().unwrap_or(0),
+            pull_requests_opened: pull_requests_per_day.get(day_index).copied().unwrap_or(0),
+        })
+        .collect();
+    koi_development
+}
+
+fn pixels(koi_frame: &KoiFrame) -> Vec<[u8; 4]> {
+    koi_frame.as_rgba_bytes().as_chunks::<4>().0.to_vec()
+}
+
+fn opaque_pixel_positions(koi_frame: &KoiFrame) -> Vec<[u32; 2]> {
+    pixels(koi_frame)
+        .iter()
+        .enumerate()
+        .filter(|(_, pixel)| pixel[3] != 0)
+        .map(|(pixel_index, _)| {
+            [
+                pixel_index as u32 % FRAME_WIDTH_PIXELS,
+                pixel_index as u32 / FRAME_WIDTH_PIXELS,
+            ]
+        })
+        .collect()
+}
+
+fn distance_from_center(pixel_x: u32, pixel_y: u32) -> f64 {
+    (f64::from(pixel_x) + 0.5 - f64::from(FRAME_WIDTH_PIXELS) / 2.0)
+        .hypot(f64::from(pixel_y) + 0.5 - f64::from(FRAME_HEIGHT_PIXELS) / 2.0)
+}
 
 type LanguageMix<'a> = &'a [(&'a str, Option<&'a str>, f64)];
 
