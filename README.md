@@ -16,6 +16,11 @@ the Rust library underneath is published on crates.io.
   <img src="docs/bodies-light.png" alt="The six bodies, white, black, Asagi, tea, gold, and platinum, at each growth stage" />
 </picture>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pond-dark.png" />
+  <img src="docs/pond-light.png" alt="The pond: lily pads by the day's issues, rocks by the day's pull requests, each by the number of days in the week with one, then mixed weeks" />
+</picture>
+
 ## Repository Structure
 
 ```text
