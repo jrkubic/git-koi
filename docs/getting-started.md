@@ -44,8 +44,11 @@ or three a medium one, and four or more a large one. A quiet week leaves the
 water clear.
 
 While the koi swims, each stroke of its tail leaves ripples on the water behind
-it that drift back and fade through the glide, and marks of moving water shimmer
-across the pond. The still shows the koi and its pond on calm water.
+it that drift back and fade through the glide, as much wake as the day's
+contributions earn: a quarter on a day without any, full at ten or more. Marks
+of moving water shimmer across the pond, as many as the week's contributions
+earn: none after a week without any, twenty at a hundred or more. The still
+shows the koi and its pond on calm water.
 
 To change the body, edit `body` in your copy of the workflow; pushing the change
 runs the workflow and redraws the koi. If you change `output-dir`, change the

@@ -1,16 +1,20 @@
 use std::{env, error::Error, fs, path::Path, process::ExitCode};
 
 use chrono::{Datelike, Days, NaiveDate};
+use git_koi::behavior::Behavior;
 use git_koi::coat::KoiBody;
 use git_koi::history::{AccountSnapshot, ContributionWeek, DayActivity, LanguageColor};
 use git_koi::koi::{
     ADULT_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS, RecentStreak,
     YOUNG_SHAPE_CONTRIBUTIONS, derive_koi_development,
 };
+use git_koi::motion::{calculate_swim_pose, frame_count};
 use git_koi::output::{
     STATIC_EXPORT_SCALE, STATIC_HEIGHT_PIXELS, STATIC_WIDTH_PIXELS, encode_png, encode_svg,
 };
-use git_koi::render::{FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi};
+use git_koi::render::{
+    FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi, render_swim_frame,
+};
 
 /// Language mixes with GitHub's colors and their shares of the account's projects.
 type LanguageMix = &'static [(&'static str, &'static str, f64)];
@@ -88,53 +92,107 @@ const MARKING_SAMPLES: [(&str, usize, Option<RecentSample>); 12] = [
     ("longest-104-weeks", 104, Some(ended_long_ago(104))),
     ("longest-208-weeks", 208, Some(ended_long_ago(208))),
 ];
-/// Pond samples: name, then issues and pull requests opened on each of the last seven
-/// days, oldest first. Each row of six fills one overview row: lily pads by the day's
-/// issues, rocks by the day's pull requests, lily pads by days with an issue, rocks by
-/// days with a pull request, then mixed weeks.
-const POND_SAMPLES: [(&str, [u32; 7], [u32; 7]); 30] = [
-    ("no-issues", [0; 7], [0; 7]),
-    ("1-issue-yesterday", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
-    ("2-issues-yesterday", [0, 0, 0, 0, 0, 0, 2], [0; 7]),
-    ("3-issues-yesterday", [0, 0, 0, 0, 0, 0, 3], [0; 7]),
-    ("4-issues-yesterday", [0, 0, 0, 0, 0, 0, 4], [0; 7]),
-    ("8-issues-yesterday", [0, 0, 0, 0, 0, 0, 8], [0; 7]),
-    ("no-pull-requests", [0; 7], [0; 7]),
-    ("1-pull-request-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
-    ("2-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 2]),
-    ("3-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 3]),
-    ("4-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 4]),
-    ("8-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 8]),
-    ("1-issue-day", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
-    ("2-issue-days", [0, 0, 0, 0, 0, 1, 1], [0; 7]),
-    ("3-issue-days", [0, 0, 0, 0, 1, 1, 1], [0; 7]),
-    ("4-issue-days", [0, 0, 0, 1, 1, 1, 1], [0; 7]),
-    ("5-issue-days", [0, 0, 1, 1, 1, 1, 1], [0; 7]),
-    ("7-issue-days", [1; 7], [0; 7]),
-    ("1-pull-request-day", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
-    ("2-pull-request-days", [0; 7], [0, 0, 0, 0, 0, 1, 1]),
-    ("3-pull-request-days", [0; 7], [0, 0, 0, 0, 1, 1, 1]),
-    ("4-pull-request-days", [0; 7], [0, 0, 0, 1, 1, 1, 1]),
-    ("5-pull-request-days", [0; 7], [0, 0, 1, 1, 1, 1, 1]),
-    ("7-pull-request-days", [0; 7], [1; 7]),
-    (
-        "one-of-each-yesterday",
+/// One pond and water sample: name, issues and pull requests opened on each of the
+/// last seven days oldest first, contributions in the week, and contributions on the
+/// observation date.
+struct PondSample {
+    name: &'static str,
+    issues_per_day: [u32; 7],
+    pull_requests_per_day: [u32; 7],
+    week_contributions: u64,
+    day_contributions: u64,
+}
+
+const fn pond_sample(
+    name: &'static str,
+    issues_per_day: [u32; 7],
+    pull_requests_per_day: [u32; 7],
+    week_contributions: u64,
+    day_contributions: u64,
+) -> PondSample {
+    PondSample {
+        name,
+        issues_per_day,
+        pull_requests_per_day,
+        week_contributions,
+        day_contributions,
+    }
+}
+
+/// Middling water for the rows that show the objects.
+const SAMPLE_WEEK_CONTRIBUTIONS: u64 = 20;
+const SAMPLE_DAY_CONTRIBUTIONS: u32 = 3;
+/// Pond samples, each row of six filling one overview row: lily pads by the day's issue
+/// count, rocks by the day's pull request count, lily pads by days with an issue, rocks
+/// by days with a pull request, water marks by the week's contributions, and the wake
+/// by the day's contributions.
+const POND_SAMPLES: [PondSample; 36] = [
+    pond_sample("0-issues-yesterday", [0; 7], [0; 7], 20, 3),
+    pond_sample("1-issue-yesterday", [0, 0, 0, 0, 0, 0, 1], [0; 7], 20, 3),
+    pond_sample("2-issues-yesterday", [0, 0, 0, 0, 0, 0, 2], [0; 7], 20, 3),
+    pond_sample("3-issues-yesterday", [0, 0, 0, 0, 0, 0, 3], [0; 7], 20, 3),
+    pond_sample("4-issues-yesterday", [0, 0, 0, 0, 0, 0, 4], [0; 7], 20, 3),
+    pond_sample("8-issues-yesterday", [0, 0, 0, 0, 0, 0, 8], [0; 7], 20, 3),
+    pond_sample("0-pull-requests-yesterday", [0; 7], [0; 7], 20, 3),
+    pond_sample(
+        "1-pull-request-yesterday",
+        [0; 7],
         [0, 0, 0, 0, 0, 0, 1],
-        [0, 0, 0, 0, 0, 0, 1],
+        20,
+        3,
     ),
-    (
-        "a-burst-three-days-ago",
-        [0, 0, 0, 3, 0, 0, 0],
-        [0, 0, 0, 2, 0, 0, 0],
+    pond_sample(
+        "2-pull-requests-yesterday",
+        [0; 7],
+        [0, 0, 0, 0, 0, 0, 2],
+        20,
+        3,
     ),
-    ("a-steady-week", [1; 7], [1; 7]),
-    (
-        "a-big-day-yesterday",
-        [0, 0, 0, 0, 0, 0, 6],
-        [0, 0, 0, 0, 0, 0, 6],
+    pond_sample(
+        "3-pull-requests-yesterday",
+        [0; 7],
+        [0, 0, 0, 0, 0, 0, 3],
+        20,
+        3,
     ),
-    ("two-bursts", [0, 5, 0, 0, 0, 4, 0], [2, 0, 0, 3, 0, 0, 1]),
-    ("a-huge-week", [4; 7], [4; 7]),
+    pond_sample(
+        "4-pull-requests-yesterday",
+        [0; 7],
+        [0, 0, 0, 0, 0, 0, 4],
+        20,
+        3,
+    ),
+    pond_sample(
+        "8-pull-requests-yesterday",
+        [0; 7],
+        [0, 0, 0, 0, 0, 0, 8],
+        20,
+        3,
+    ),
+    pond_sample("1-issue-day", [0, 0, 0, 0, 0, 0, 1], [0; 7], 20, 3),
+    pond_sample("2-issue-days", [0, 0, 0, 0, 0, 1, 1], [0; 7], 20, 3),
+    pond_sample("3-issue-days", [0, 0, 0, 0, 1, 1, 1], [0; 7], 20, 3),
+    pond_sample("4-issue-days", [0, 0, 0, 1, 1, 1, 1], [0; 7], 20, 3),
+    pond_sample("5-issue-days", [0, 0, 1, 1, 1, 1, 1], [0; 7], 20, 3),
+    pond_sample("7-issue-days", [1; 7], [0; 7], 20, 3),
+    pond_sample("1-pull-request-day", [0; 7], [0, 0, 0, 0, 0, 0, 1], 20, 3),
+    pond_sample("2-pull-request-days", [0; 7], [0, 0, 0, 0, 0, 1, 1], 20, 3),
+    pond_sample("3-pull-request-days", [0; 7], [0, 0, 0, 0, 1, 1, 1], 20, 3),
+    pond_sample("4-pull-request-days", [0; 7], [0, 0, 0, 1, 1, 1, 1], 20, 3),
+    pond_sample("5-pull-request-days", [0; 7], [0, 0, 1, 1, 1, 1, 1], 20, 3),
+    pond_sample("7-pull-request-days", [0; 7], [1; 7], 20, 3),
+    pond_sample("0-contributions-this-week", [0; 7], [0; 7], 0, 3),
+    pond_sample("1-contribution-this-week", [0; 7], [0; 7], 1, 3),
+    pond_sample("5-contributions-this-week", [0; 7], [0; 7], 5, 3),
+    pond_sample("20-contributions-this-week", [0; 7], [0; 7], 20, 3),
+    pond_sample("50-contributions-this-week", [0; 7], [0; 7], 50, 3),
+    pond_sample("100-contributions-this-week", [0; 7], [0; 7], 100, 3),
+    pond_sample("0-contributions-yesterday", [0; 7], [0; 7], 20, 0),
+    pond_sample("1-contribution-yesterday", [0; 7], [0; 7], 20, 1),
+    pond_sample("3-contributions-yesterday", [0; 7], [0; 7], 20, 3),
+    pond_sample("10-contributions-yesterday", [0; 7], [0; 7], 20, 10),
+    pond_sample("30-contributions-yesterday", [0; 7], [0; 7], 20, 30),
+    pond_sample("100-contributions-yesterday", [0; 7], [0; 7], 20, 100),
 ];
 const GROWTH_SAMPLES: [u64; 6] = [
     0,
@@ -252,21 +310,50 @@ fn generate_library(output_directory: &Path) -> Result<(), Box<dyn Error>> {
     write_overviews(output_directory, "markings", &marking_frames)?;
     set_streaks(&mut koi_development, 4, Some(ended_long_ago(4)));
     index_markdown.push_str(&format!(
-        "## Pond\n\n{body_mix_description}, at {ADULT_CONTRIBUTIONS} contributions. Lily pads \
-        for the week's issues and rocks for its pull requests. In rows of six: lily pads by \
+        "## Pond and Water\n\n{body_mix_description}, cruising at the peak of a stroke so the \
+        water shows. The bodies sheet with the pond added: each row is one body across the \
+        contribution totals, and adds one element of the pond rising with them. Lily pads by \
         the day's issue count, rocks by the day's pull request count, lily pads by the number \
-        of days with an issue, rocks by the number of days with a pull request, then mixed \
-        weeks.\n\n"
+        of days with an issue, rocks by the number of days with a pull request, water marks \
+        by the week's contributions, and the wake by the day's contributions. The object rows \
+        use {SAMPLE_WEEK_CONTRIBUTIONS} contributions in the week and \
+        {SAMPLE_DAY_CONTRIBUTIONS} on the day.\n\n"
     ));
+    let stroke_peak_frame = (0..frame_count(Behavior::Cruise))
+        .max_by(|&first, &second| {
+            calculate_swim_pose(Behavior::Cruise, first)
+                .wake_strength
+                .total_cmp(&calculate_swim_pose(Behavior::Cruise, second).wake_strength)
+        })
+        .expect("a cruise has frames");
     let mut pond_frames = Vec::new();
-    for (sample_name, issues_per_day, pull_requests_per_day) in POND_SAMPLES {
-        set_week(&mut koi_development, issues_per_day, pull_requests_per_day);
-        pond_frames.push(render_sample(
+    for (sample_index, pond_sample) in POND_SAMPLES.iter().enumerate() {
+        let (body_name, koi_body) = BODY_SAMPLES[sample_index / GROWTH_SAMPLES.len()];
+        let contribution_total = GROWTH_SAMPLES[sample_index % GROWTH_SAMPLES.len()];
+        koi_development.total_contributions = contribution_total;
+        set_week(
+            &mut koi_development,
+            pond_sample.issues_per_day,
+            pond_sample.pull_requests_per_day,
+        );
+        koi_development.recent_activity.recent_contributions = pond_sample.week_contributions;
+        koi_development
+            .recent_activity
+            .observation_week_contributions = vec![pond_sample.day_contributions];
+        pond_frames.push(write_sample(
             output_directory,
-            &koi_development,
-            KoiBody::default(),
-            &format!("pond-{sample_name}"),
-            &capitalize(&sample_name.replace('-', " ")),
+            render_swim_frame(
+                &koi_development,
+                koi_body,
+                Behavior::Cruise,
+                stroke_peak_frame,
+            ),
+            &format!("pond-{body_name}-{}", pond_sample.name),
+            &format!(
+                "{} Body, {contribution_total} Contributions, {}",
+                capitalize(body_name),
+                pond_sample.name.replace('-', " ")
+            ),
             &mut index_markdown,
         )?);
     }
@@ -389,7 +476,8 @@ fn render_growth_samples(
     Ok(rendered_frames)
 }
 
-/// Render and write one PNG/SVG pair, and list it in the index under a heading.
+/// Render the still and write it as one PNG/SVG pair, listed in the index under a
+/// heading.
 fn render_sample(
     output_directory: &Path,
     koi_development: &KoiDevelopment,
@@ -398,7 +486,23 @@ fn render_sample(
     heading: &str,
     index_markdown: &mut String,
 ) -> Result<KoiFrame, Box<dyn Error>> {
-    let koi_frame = render_koi(koi_development, koi_body);
+    write_sample(
+        output_directory,
+        render_koi(koi_development, koi_body),
+        file_stem,
+        heading,
+        index_markdown,
+    )
+}
+
+/// Write one frame as a PNG/SVG pair, and list it in the index under a heading.
+fn write_sample(
+    output_directory: &Path,
+    koi_frame: KoiFrame,
+    file_stem: &str,
+    heading: &str,
+    index_markdown: &mut String,
+) -> Result<KoiFrame, Box<dyn Error>> {
     let file_name = format!("{file_stem}.png");
     write_artifact(output_directory, &file_name, &encode_png(&koi_frame)?)?;
     let svg_name = format!("{file_stem}.svg");
@@ -448,14 +552,18 @@ fn build_index_header(identity_seed: u64) -> String {
         from left to right, and rows follow the mix or body order. These are samples of\n\
         continuous growth. The markings overview follows the streak marking sections in\n\
         rows of six: current streaks, longest streaks, then bodies without and with\n\
-        marks. The pond overview has five rows: lily pads by the day's issues, rocks by\n\
-        the day's pull requests, lily pads by days with an issue, rocks by days with a\n\
-        pull request, then mixed weeks.\n\n\
+        marks. The pond and water overview is the bodies overview with the pond added:\n\
+        the same bodies down the rows and contribution totals across the columns, and\n\
+        each row adds one element rising with them: lily pads by the day's issues,\n\
+        rocks by the day's pull requests, lily pads by days with an issue, rocks by days\n\
+        with a pull request, water marks by the week's contributions, and the wake by\n\
+        the day's contributions.\n\n\
         Mixes: [light overview](overview-light.png) · [dark overview](overview-dark.png)\n\n\
         Bodies: [light overview](bodies-light.png) · [dark overview](bodies-dark.png)\n\n\
         Streak markings: [light overview](markings-light.png) ·\n\
         [dark overview](markings-dark.png)\n\n\
-        Pond: [light overview](pond-light.png) · [dark overview](pond-dark.png)\n\n\
+        Pond and water: [light overview](pond-light.png) ·\n\
+        [dark overview](pond-dark.png)\n\n\
         Native canvas: {FRAME_WIDTH_PIXELS} × {FRAME_HEIGHT_PIXELS}.\n\n\
         PNG and SVG exports: {STATIC_WIDTH_PIXELS} × {STATIC_HEIGHT_PIXELS}.\n\n\
         Identity seed: {identity_seed}.\n\n"

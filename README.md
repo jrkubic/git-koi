@@ -13,8 +13,25 @@ the Rust library underneath is published on crates.io.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/pond-dark.png" />
-  <img src="docs/pond-light.png" alt="The pond: lily pads by the day's issues, rocks by the day's pull requests, each by the number of days in the week with one, then mixed weeks" />
+  <img src="docs/pond-light.png" alt="The six bodies at each growth stage, each row adding one element of the pond rising with it: lily pads by the day's issues, rocks by the day's pull requests, each by days in the week with one, water marks by the week's contributions, and the wake by the day's contributions" />
 </picture>
+
+Down the rows, the six bodies, white, black, Asagi, tea, gold, and platinum;
+across the columns, growth from no contributions to a hundred thousand; and in
+each row one element of the pond rising alongside. Everything in the picture
+comes from the account's public activity:
+
+| Element     | Activity                                          | Levels                                                       |
+| ----------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| Colors      | Primary languages of its public repositories      | Each language's GitHub color becomes a koi pigment           |
+| Size        | Total contributions                               | Young by 1,500, adult by 12,750, full grown by 100,000       |
+| Fin marks   | The current weekly streak                         | Build over 13 weeks, fade for 6 after the streak ends        |
+| Color depth | The longest weekly streak                         | Dull to normal by 4 weeks, vivid by 52, glinting by 208      |
+| Movement    | The day that just ended                           | Rest, surface feeding, dart, or cruise                       |
+| Lily pads   | Issues opened, each of the last seven days        | One per day; 1 small, 2 to 3 medium, 4 or more large         |
+| Rocks       | Pull requests opened, each of the last seven days | One per day, sized the same way                              |
+| Water marks | Contributions in the last seven days              | None at 0, about 8 at 20, 20 at 100 or more                  |
+| Wake        | Contributions on the day that just ended          | A quarter at 0, full at 10 or more, times the day's movement |
 
 ## Repository Structure
 
