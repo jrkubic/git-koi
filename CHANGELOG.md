@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A pond around the koi: each of the last seven days with an issue opened floats
+  a lily pad, and each with a pull request opened settles a rock, sized by the
+  day's count. `git-koi collect` records the week's counts in snapshot version
+  4, `git-koi render` draws rocks under the koi and lily pads over it, and the
+  render caption names them. Older snapshots still render, without a pond.
+
 ## [1.0.2] - 2026-10-31
 
 ### Fixed
