@@ -89,14 +89,52 @@ const MARKING_SAMPLES: [(&str, usize, Option<RecentSample>); 12] = [
     ("longest-208-weeks", 208, Some(ended_long_ago(208))),
 ];
 /// Pond samples: name, then issues and pull requests opened on each of the last seven
-/// days, oldest first. One row of six fills one overview row.
-const POND_SAMPLES: [(&str, [u32; 7], [u32; 7]); 6] = [
-    ("quiet-week", [0; 7], [0; 7]),
-    ("one-issue-yesterday", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
-    ("three-issues-yesterday", [0, 0, 0, 0, 0, 0, 3], [0; 7]),
-    ("six-issues-yesterday", [0, 0, 0, 0, 0, 0, 6], [0; 7]),
-    ("one-pull-request-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
-    ("busy-week", [1, 0, 2, 4, 0, 3, 1], [0, 1, 1, 0, 4, 0, 2]),
+/// days, oldest first. Each row of six fills one overview row: lily pads by the day's
+/// issues, rocks by the day's pull requests, lily pads by days with an issue, rocks by
+/// days with a pull request, then mixed weeks.
+const POND_SAMPLES: [(&str, [u32; 7], [u32; 7]); 30] = [
+    ("no-issues", [0; 7], [0; 7]),
+    ("1-issue-yesterday", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
+    ("2-issues-yesterday", [0, 0, 0, 0, 0, 0, 2], [0; 7]),
+    ("3-issues-yesterday", [0, 0, 0, 0, 0, 0, 3], [0; 7]),
+    ("4-issues-yesterday", [0, 0, 0, 0, 0, 0, 4], [0; 7]),
+    ("8-issues-yesterday", [0, 0, 0, 0, 0, 0, 8], [0; 7]),
+    ("no-pull-requests", [0; 7], [0; 7]),
+    ("1-pull-request-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
+    ("2-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 2]),
+    ("3-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 3]),
+    ("4-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 4]),
+    ("8-pull-requests-yesterday", [0; 7], [0, 0, 0, 0, 0, 0, 8]),
+    ("1-issue-day", [0, 0, 0, 0, 0, 0, 1], [0; 7]),
+    ("2-issue-days", [0, 0, 0, 0, 0, 1, 1], [0; 7]),
+    ("3-issue-days", [0, 0, 0, 0, 1, 1, 1], [0; 7]),
+    ("4-issue-days", [0, 0, 0, 1, 1, 1, 1], [0; 7]),
+    ("5-issue-days", [0, 0, 1, 1, 1, 1, 1], [0; 7]),
+    ("7-issue-days", [1; 7], [0; 7]),
+    ("1-pull-request-day", [0; 7], [0, 0, 0, 0, 0, 0, 1]),
+    ("2-pull-request-days", [0; 7], [0, 0, 0, 0, 0, 1, 1]),
+    ("3-pull-request-days", [0; 7], [0, 0, 0, 0, 1, 1, 1]),
+    ("4-pull-request-days", [0; 7], [0, 0, 0, 1, 1, 1, 1]),
+    ("5-pull-request-days", [0; 7], [0, 0, 1, 1, 1, 1, 1]),
+    ("7-pull-request-days", [0; 7], [1; 7]),
+    (
+        "one-of-each-yesterday",
+        [0, 0, 0, 0, 0, 0, 1],
+        [0, 0, 0, 0, 0, 0, 1],
+    ),
+    (
+        "a-burst-three-days-ago",
+        [0, 0, 0, 3, 0, 0, 0],
+        [0, 0, 0, 2, 0, 0, 0],
+    ),
+    ("a-steady-week", [1; 7], [1; 7]),
+    (
+        "a-big-day-yesterday",
+        [0, 0, 0, 0, 0, 0, 6],
+        [0, 0, 0, 0, 0, 0, 6],
+    ),
+    ("two-bursts", [0, 5, 0, 0, 0, 4, 0], [2, 0, 0, 3, 0, 0, 1]),
+    ("a-huge-week", [4; 7], [4; 7]),
 ];
 const GROWTH_SAMPLES: [u64; 6] = [
     0,
@@ -215,7 +253,10 @@ fn generate_library(output_directory: &Path) -> Result<(), Box<dyn Error>> {
     set_streaks(&mut koi_development, 4, Some(ended_long_ago(4)));
     index_markdown.push_str(&format!(
         "## Pond\n\n{body_mix_description}, at {ADULT_CONTRIBUTIONS} contributions. Lily pads \
-        for the week's issues and rocks for its pull requests, from a quiet week to a busy one.\n\n"
+        for the week's issues and rocks for its pull requests. In rows of six: lily pads by \
+        the day's issue count, rocks by the day's pull request count, lily pads by the number \
+        of days with an issue, rocks by the number of days with a pull request, then mixed \
+        weeks.\n\n"
     ));
     let mut pond_frames = Vec::new();
     for (sample_name, issues_per_day, pull_requests_per_day) in POND_SAMPLES {
@@ -407,7 +448,9 @@ fn build_index_header(identity_seed: u64) -> String {
         from left to right, and rows follow the mix or body order. These are samples of\n\
         continuous growth. The markings overview follows the streak marking sections in\n\
         rows of six: current streaks, longest streaks, then bodies without and with\n\
-        marks. The pond overview is one row, from a quiet week to a busy one.\n\n\
+        marks. The pond overview has five rows: lily pads by the day's issues, rocks by\n\
+        the day's pull requests, lily pads by days with an issue, rocks by days with a\n\
+        pull request, then mixed weeks.\n\n\
         Mixes: [light overview](overview-light.png) · [dark overview](overview-dark.png)\n\n\
         Bodies: [light overview](bodies-light.png) · [dark overview](bodies-dark.png)\n\n\
         Streak markings: [light overview](markings-light.png) ·\n\
