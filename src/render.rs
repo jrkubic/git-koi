@@ -86,8 +86,9 @@ pub fn render_koi(koi_development: &KoiDevelopment, koi_body: KoiBody) -> KoiFra
 /// on the koi's sweep, and its drift shrinks only as far as the largest koi need to
 /// stay inside. The view never follows the fins, so it never shakes. Under water the koi
 /// turns toward water blue and partly drops out, more with depth; the pond stays as it
-/// is, fixed in the frame across the loop. The koi's wake trails its tail, and water
-/// marks seeded by the account shimmer across the water once per loop; the still has
+/// is, fixed in the frame across the loop. The koi's wake trails its tail, as much as
+/// the day's contributions earn, and water marks seeded by the account shimmer across
+/// the water once per loop, as many as the week's contributions earn; the still has
 /// neither. Identical inputs produce identical pixels without I/O, clock reads, or
 /// input mutation.
 pub fn render_swim_frame(
@@ -274,18 +275,23 @@ fn render_pose(
     if swim_pose.depth > 0.0 {
         paint_depth(&mut rgba_pixels, &fish_pixel_mask, swim_pose.depth);
     }
+    let pond = lay_out_pond(koi_development);
     paint_wake(
         &mut rgba_pixels,
         &body_spine,
         &fin_curves,
         pose_center,
-        swim_pose.wake_strength,
+        swim_pose.wake_strength * pond.water.wake_scale,
         swim_pose.wave_phase_radians,
     );
     if let Some(water_phase) = water_phase {
-        paint_water_marks(&mut rgba_pixels, koi_development.identity_seed, water_phase);
+        paint_water_marks(
+            &mut rgba_pixels,
+            koi_development.identity_seed,
+            water_phase,
+            pond.water.mark_count,
+        );
     }
-    let pond = lay_out_pond(koi_development);
     let rock_layer = paint_pond_layer(&pond.rocks);
     for (pixel_channels, &rock_channels) in rgba_pixels.iter_mut().zip(&rock_layer) {
         if pixel_channels[3] == 0 {
@@ -645,8 +651,8 @@ const WAKE_COLORS: [[u8; 4]; 2] = [[150, 205, 235, 255], [100, 170, 220, 255]];
 const WATER_MARK_COLORS: [[u8; 4]; 2] = [[175, 218, 240, 255], [130, 190, 230, 255]];
 
 /// The wake: shallow chevrons of ripples trailing behind the tail fin on the water,
-/// each opening backward and spreading and thinning with distance. The wake strength
-/// sets how many there are and how full; they drift back with the body wave, so each
+/// each opening backward and spreading and thinning with distance. The wake strength,
+/// the pose's scaled by the pond's water, sets how many there are and how full; they drift back with the body wave, so each
 /// stroke's ripples move away from the tail and fade through the glide. Ripples fill
 /// only empty water, so they never touch the koi, and they are painted after the
 /// depth tint so they stay on the surface.
@@ -659,7 +665,7 @@ fn paint_wake(
     drift_phase_radians: f64,
 ) {
     const VISIBLE_STRENGTH: f64 = 0.05;
-    const WAKE_RIPPLE_COUNT: usize = 5;
+    const WAKE_RIPPLE_COUNT: usize = 4;
     const FIRST_RIPPLE_GAP_PIXELS: f64 = 3.0;
     const RIPPLE_SPACING_PIXELS: f64 = 4.5;
     /// Ripple half widths across the wake, from the nearest to the farthest.
@@ -722,12 +728,17 @@ fn paint_wake(
     }
 }
 
-/// Water marks: short wavy strokes scattered over the water, placed by the account
-/// seed so every pond differs, sliding and breathing once per loop so they shimmer.
-/// They fill only empty water, after the koi and its wake, so the koi passes over
-/// them and the rocks lie under them.
-fn paint_water_marks(rgba_pixels: &mut [[u8; 4]], identity_seed: u64, water_phase: f64) {
-    const MARK_COUNT: usize = 14;
+/// Water marks: short wavy strokes scattered over the water, as many as the pond
+/// says, placed by the account seed so every pond differs, sliding and breathing once
+/// per loop so they shimmer. More marks add to the same places, so a livelier week
+/// keeps the marks a quieter one had. They fill only empty water, after the koi and
+/// its wake, so the koi passes over them and the rocks lie under them.
+fn paint_water_marks(
+    rgba_pixels: &mut [[u8; 4]],
+    identity_seed: u64,
+    water_phase: f64,
+    mark_count: usize,
+) {
     const MIN_HALF_WIDTH_PIXELS: u64 = 3;
     const EXTRA_HALF_WIDTH_PIXELS: u64 = 4;
     const WAVE_HEIGHT_PIXELS: f64 = 1.2;
@@ -746,7 +757,7 @@ fn paint_water_marks(rgba_pixels: &mut [[u8; 4]], identity_seed: u64, water_phas
             .wrapping_add(1_442_695_040_888_963_407);
         seed_state >> 33
     };
-    for _ in 0..MARK_COUNT {
+    for _ in 0..mark_count {
         let center_x = (EDGE_MARGIN_PIXELS
             + next_number() % (u64::from(FRAME_WIDTH_PIXELS) - 2 * EDGE_MARGIN_PIXELS))
             as f64
