@@ -267,6 +267,13 @@ fn render_pose(
     if swim_pose.depth > 0.0 {
         paint_depth(&mut rgba_pixels, &fish_pixel_mask, swim_pose.depth);
     }
+    paint_wake(
+        &mut rgba_pixels,
+        &body_spine,
+        &fin_curves,
+        pose_center,
+        swim_pose.wake_strength,
+    );
     let pond = lay_out_pond(koi_development);
     let rock_layer = paint_pond_layer(&pond.rocks);
     for (pixel_channels, &rock_channels) in rgba_pixels.iter_mut().zip(&rock_layer) {
@@ -618,6 +625,85 @@ fn paint_feeding(
             PELLET_COLORS[1],
             1.0,
         );
+    }
+}
+
+/// Pale ripple colors for the wake, lighter nearer the tail.
+const WAKE_COLORS: [[u8; 4]; 2] = [[150, 205, 235, 255], [100, 170, 220, 255]];
+
+/// The wake: a few shallow chevrons trailing behind the tail fin on the water, each
+/// opening backward and spreading and thinning with distance. A stroke leaves up to
+/// WAKE_RIPPLE_COUNT ripples and a glide none; each ripple is dithered by how far it
+/// has spread. Ripples fill only empty water, so they never touch the koi, and they
+/// are painted after the depth tint so they stay on the surface.
+fn paint_wake(
+    rgba_pixels: &mut [[u8; 4]],
+    body_spine: &[CurvePoint],
+    fin_curves: &[Vec<CurvePoint>],
+    pose_center: [f64; 2],
+    wake_strength: f64,
+) {
+    const VISIBLE_STRENGTH: f64 = 0.05;
+    const WAKE_RIPPLE_COUNT: usize = 3;
+    const FIRST_RIPPLE_GAP_PIXELS: f64 = 3.0;
+    const RIPPLE_SPACING_PIXELS: f64 = 4.0;
+    /// Ripple half widths across the wake, growing as it spreads.
+    const RIPPLE_HALF_WIDTHS_PIXELS: [f64; WAKE_RIPPLE_COUNT] = [1.0, 2.0, 3.0];
+    /// Each ripple bends back this far per pixel across, so it opens behind the koi.
+    const CHEVRON_SWEEP: f64 = 0.5;
+    /// The farthest ripple keeps this share of its pixels at full strength.
+    const FARTHEST_RIPPLE_SHARE: f64 = 0.5;
+    if wake_strength <= VISIBLE_STRENGTH {
+        return;
+    }
+    let frame_sizes = [
+        f64::from(FRAME_WIDTH_PIXELS),
+        f64::from(FRAME_HEIGHT_PIXELS),
+    ];
+    // The tail lobes are the first fin pair; the wake starts between their tips.
+    let [left_lobe, right_lobe] = [&fin_curves[0], &fin_curves[1]];
+    let left_tip = left_lobe[left_lobe.len() - 1].position;
+    let right_tip = right_lobe[right_lobe.len() - 1].position;
+    let tail_tip = [
+        (left_tip[0] + right_tip[0]) / 2.0,
+        (left_tip[1] + right_tip[1]) / 2.0,
+    ];
+    let forward_direction = calculate_forward_direction(body_spine, body_spine.len() - 1);
+    let backward_direction = [-forward_direction[0], -forward_direction[1]];
+    let across_direction = [-backward_direction[1], backward_direction[0]];
+    let ripple_count = (wake_strength * WAKE_RIPPLE_COUNT as f64).ceil() as usize;
+    let frame_width = FRAME_WIDTH_PIXELS as usize;
+    for ripple_index in 0..ripple_count.min(WAKE_RIPPLE_COUNT) {
+        let distance_pixels = FIRST_RIPPLE_GAP_PIXELS + RIPPLE_SPACING_PIXELS * ripple_index as f64;
+        let spread_fraction = (ripple_index + 1) as f64 / WAKE_RIPPLE_COUNT as f64;
+        // Nearer ripples are brighter and fuller; farther ones thin out as they spread.
+        let dither_limit = wake_strength * (1.0 - (1.0 - FARTHEST_RIPPLE_SHARE) * spread_fraction);
+        let ripple_color = WAKE_COLORS[usize::from(ripple_index > 0)];
+        let half_width_pixels = RIPPLE_HALF_WIDTHS_PIXELS[ripple_index];
+        let mut across_pixels = -half_width_pixels;
+        while across_pixels <= half_width_pixels {
+            let swept_distance_pixels = distance_pixels + CHEVRON_SWEEP * across_pixels.abs();
+            let ripple_point = [0, 1].map(|axis_index| {
+                tail_tip[axis_index]
+                    + backward_direction[axis_index] * swept_distance_pixels
+                    + across_direction[axis_index] * across_pixels
+                    - pose_center[axis_index]
+                    + frame_sizes[axis_index] / 2.0
+            });
+            across_pixels += 1.0;
+            let [pixel_x, pixel_y] = ripple_point.map(f64::floor);
+            if !(0.0..frame_sizes[0]).contains(&pixel_x)
+                || !(0.0..frame_sizes[1]).contains(&pixel_y)
+            {
+                continue;
+            }
+            let pixel_index = pixel_y as usize * frame_width + pixel_x as usize;
+            if rgba_pixels[pixel_index][3] == 0
+                && calculate_dither_threshold([pixel_x as u32, pixel_y as u32]) < dither_limit
+            {
+                rgba_pixels[pixel_index] = ripple_color;
+            }
+        }
     }
 }
 

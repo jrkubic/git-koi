@@ -43,6 +43,9 @@ a rock, newest nearest the top right. One opened that day makes a small one, two
 or three a medium one, and four or more a large one. A quiet week leaves the
 water clear.
 
+While the koi swims, each stroke of its tail leaves a few ripples on the water
+behind it that fade through the glide.
+
 To change the body, edit `body` in your copy of the workflow; pushing the change
 runs the workflow and redraws the koi. If you change `output-dir`, change the
 commit step's path and the README image to match. The example uses

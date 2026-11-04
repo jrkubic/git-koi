@@ -11,7 +11,7 @@ use git_koi::koi::{
     ADULT_CONTRIBUTIONS, FULL_COLOR_CONTRIBUTIONS, KoiDevelopment, MAX_GROWTH_CONTRIBUTIONS,
     RecentStreak, derive_koi_development,
 };
-use git_koi::motion::frame_count;
+use git_koi::motion::{SwimPose, calculate_swim_pose, frame_count};
 use git_koi::output::{encode_gif, encode_png};
 use git_koi::render::{
     FRAME_HEIGHT_PIXELS, FRAME_WIDTH_PIXELS, KoiFrame, render_koi, render_swim_frame,
@@ -19,6 +19,97 @@ use git_koi::render::{
 
 /// Pixels farther than this from the frame center are the pond's, never the koi's.
 const KOI_REACH_PIXELS: f64 = 120.0;
+/// The wake's two ripple colors, which nothing else paints.
+const WAKE_COLORS: [[u8; 4]; 2] = [[150, 205, 235, 255], [100, 170, 220, 255]];
+
+#[test]
+fn a_stroke_leaves_a_wake_and_a_glide_none() {
+    let koi_development = read_fixture_development();
+    let wake_pixel_count = |behavior, frame_index| {
+        pixels(&render_swim_frame(
+            &koi_development,
+            KoiBody::default(),
+            behavior,
+            frame_index,
+        ))
+        .iter()
+        .filter(|pixel| WAKE_COLORS.contains(pixel))
+        .count()
+    };
+    for behavior in [Behavior::Cruise, Behavior::Dart] {
+        let poses: Vec<SwimPose> = (0..frame_count(behavior))
+            .map(|frame_index| calculate_swim_pose(behavior, frame_index))
+            .collect();
+        let peak_frame = (0..poses.len())
+            .max_by(|&first, &second| {
+                poses[first]
+                    .wake_strength
+                    .total_cmp(&poses[second].wake_strength)
+            })
+            .unwrap() as u32;
+        let glide_frame = (0..poses.len())
+            .find(|&frame_index| poses[frame_index].wake_strength == 0.0)
+            .unwrap() as u32;
+        let peak_count = wake_pixel_count(behavior, peak_frame);
+        assert!(peak_count > 0, "{behavior:?} stroke left no wake");
+        assert!(
+            peak_count < 60,
+            "{behavior:?} wake is not subtle: {peak_count}"
+        );
+        assert_eq!(wake_pixel_count(behavior, glide_frame), 0, "{behavior:?}");
+    }
+    assert_eq!(wake_pixel_count(Behavior::DeepRest, 75), 0);
+    // The still koi, hovering, has no wake.
+    assert_eq!(
+        pixels(&render_koi(&koi_development, KoiBody::default()))
+            .iter()
+            .filter(|pixel| WAKE_COLORS.contains(pixel))
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn the_wake_never_touches_the_koi() {
+    // Compare each frame against the koi alone: wake pixels sit only on empty water.
+    // Wake pixels are the only ones in the wake colors, so painting the koi over a
+    // frame cannot be told apart from the wake lying behind it unless the two overlap.
+    let koi_development = read_fixture_development();
+    for frame_index in (0..frame_count(Behavior::Dart)).step_by(7) {
+        let koi_frame = pixels(&render_swim_frame(
+            &koi_development,
+            KoiBody::Black,
+            Behavior::Dart,
+            frame_index,
+        ));
+        let wake_pixel_positions: Vec<usize> = koi_frame
+            .iter()
+            .enumerate()
+            .filter(|(_, pixel)| WAKE_COLORS.contains(pixel))
+            .map(|(pixel_index, _)| pixel_index)
+            .collect();
+        // No wake pixel borders the koi's inside: each has a transparent or wake or
+        // outline neighbor pattern, never a body pixel on both sides across the ripple.
+        for pixel_index in wake_pixel_positions {
+            let neighbors = [
+                pixel_index.checked_sub(1),
+                Some(pixel_index + 1),
+                pixel_index.checked_sub(FRAME_WIDTH_PIXELS as usize),
+                Some(pixel_index + FRAME_WIDTH_PIXELS as usize),
+            ];
+            let koi_neighbor_count = neighbors
+                .into_iter()
+                .flatten()
+                .filter(|&neighbor_index| neighbor_index < koi_frame.len())
+                .filter(|&neighbor_index| {
+                    let neighbor = koi_frame[neighbor_index];
+                    neighbor[3] != 0 && !WAKE_COLORS.contains(&neighbor)
+                })
+                .count();
+            assert!(koi_neighbor_count < 3, "a ripple is inside the koi");
+        }
+    }
+}
 
 #[test]
 fn a_quiet_week_draws_only_the_koi() {
