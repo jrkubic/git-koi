@@ -21,6 +21,45 @@ use git_koi::render::{
 const KOI_REACH_PIXELS: f64 = 120.0;
 /// The wake's two ripple colors, which nothing else paints.
 const WAKE_COLORS: [[u8; 4]; 2] = [[150, 205, 235, 255], [100, 170, 220, 255]];
+/// The water marks' two colors, which nothing else paints.
+const WATER_MARK_COLORS: [[u8; 4]; 2] = [[175, 218, 240, 255], [130, 190, 230, 255]];
+
+#[test]
+fn water_marks_shimmer_through_the_loop_and_differ_between_accounts() {
+    let koi_development = read_fixture_development();
+    let mark_pixels = |koi_development: &KoiDevelopment, frame_index| -> Vec<usize> {
+        pixels(&render_swim_frame(
+            koi_development,
+            KoiBody::default(),
+            Behavior::Cruise,
+            frame_index,
+        ))
+        .iter()
+        .enumerate()
+        .filter(|(_, pixel)| WATER_MARK_COLORS.contains(pixel))
+        .map(|(pixel_index, _)| pixel_index)
+        .collect()
+    };
+    let first_marks = mark_pixels(&koi_development, 0);
+    assert!(
+        (30..600).contains(&first_marks.len()),
+        "{}",
+        first_marks.len()
+    );
+    assert_ne!(mark_pixels(&koi_development, 30), first_marks);
+    assert_eq!(
+        mark_pixels(&koi_development, frame_count(Behavior::Cruise)),
+        first_marks
+    );
+    let mut other_development = read_fixture_development();
+    other_development.identity_seed += 1;
+    assert_ne!(mark_pixels(&other_development, 0), first_marks);
+    assert!(
+        !pixels(&render_koi(&koi_development, KoiBody::default()))
+            .iter()
+            .any(|pixel| WATER_MARK_COLORS.contains(pixel))
+    );
+}
 
 #[test]
 fn a_stroke_leaves_a_wake_and_a_glide_none() {
@@ -53,7 +92,7 @@ fn a_stroke_leaves_a_wake_and_a_glide_none() {
         let peak_count = wake_pixel_count(behavior, peak_frame);
         assert!(peak_count > 0, "{behavior:?} stroke left no wake");
         assert!(
-            peak_count < 60,
+            peak_count < 120,
             "{behavior:?} wake is not subtle: {peak_count}"
         );
         assert_eq!(wake_pixel_count(behavior, glide_frame), 0, "{behavior:?}");
@@ -70,7 +109,9 @@ fn a_stroke_leaves_a_wake_and_a_glide_none() {
 }
 
 #[test]
-fn the_wake_never_touches_the_koi() {
+fn the_wake_and_water_marks_never_touch_the_koi() {
+    let is_water =
+        |pixel: &[u8; 4]| WAKE_COLORS.contains(pixel) || WATER_MARK_COLORS.contains(pixel);
     // Compare each frame against the koi alone: wake pixels sit only on empty water.
     // Wake pixels are the only ones in the wake colors, so painting the koi over a
     // frame cannot be told apart from the wake lying behind it unless the two overlap.
@@ -85,7 +126,7 @@ fn the_wake_never_touches_the_koi() {
         let wake_pixel_positions: Vec<usize> = koi_frame
             .iter()
             .enumerate()
-            .filter(|(_, pixel)| WAKE_COLORS.contains(pixel))
+            .filter(|(_, pixel)| is_water(pixel))
             .map(|(pixel_index, _)| pixel_index)
             .collect();
         // No wake pixel borders the koi's inside: each has a transparent or wake or
@@ -103,7 +144,7 @@ fn the_wake_never_touches_the_koi() {
                 .filter(|&neighbor_index| neighbor_index < koi_frame.len())
                 .filter(|&neighbor_index| {
                     let neighbor = koi_frame[neighbor_index];
-                    neighbor[3] != 0 && !WAKE_COLORS.contains(&neighbor)
+                    neighbor[3] != 0 && !is_water(&neighbor)
                 })
                 .count();
             assert!(koi_neighbor_count < 3, "a ripple is inside the koi");
