@@ -14,9 +14,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   4, `git-koi render` draws rocks under the koi and lily pads over it, and the
   render caption names them. Older snapshots still render, without a pond.
 - Water: a wake of ripples trails the tail with each stroke and drifts back and
-  fades through the glide, faintly while the koi rests or feeds and never in
-  deep rest, and marks seeded by the account shimmer across the water while it
-  swims. The still shows neither.
+  fades through the glide, as much as the day's contributions earn, faintly
+  while the koi rests or feeds and never in deep rest; and marks seeded by the
+  account shimmer across the water while it swims, as many as the week's
+  contributions earn. The still shows neither.
 
 ## [1.0.2] - 2026-10-31
 

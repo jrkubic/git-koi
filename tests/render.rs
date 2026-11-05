@@ -26,7 +26,7 @@ const WATER_MARK_COLORS: [[u8; 4]; 2] = [[175, 218, 240, 255], [130, 190, 230, 2
 
 #[test]
 fn water_marks_shimmer_through_the_loop_and_differ_between_accounts() {
-    let koi_development = read_fixture_development();
+    let koi_development = develop_with_water(20, 3);
     let mark_pixels = |koi_development: &KoiDevelopment, frame_index| -> Vec<usize> {
         pixels(&render_swim_frame(
             koi_development,
@@ -51,7 +51,7 @@ fn water_marks_shimmer_through_the_loop_and_differ_between_accounts() {
         mark_pixels(&koi_development, frame_count(Behavior::Cruise)),
         first_marks
     );
-    let mut other_development = read_fixture_development();
+    let mut other_development = develop_with_water(20, 3);
     other_development.identity_seed += 1;
     assert_ne!(mark_pixels(&other_development, 0), first_marks);
     assert!(
@@ -62,8 +62,41 @@ fn water_marks_shimmer_through_the_loop_and_differ_between_accounts() {
 }
 
 #[test]
+fn water_and_wake_grow_with_contributions() {
+    let peak_frame = (0..frame_count(Behavior::Cruise))
+        .max_by(|&first, &second| {
+            calculate_swim_pose(Behavior::Cruise, first)
+                .wake_strength
+                .total_cmp(&calculate_swim_pose(Behavior::Cruise, second).wake_strength)
+        })
+        .unwrap();
+    let count_colors = |koi_development: &KoiDevelopment, colors: &[[u8; 4]; 2]| {
+        pixels(&render_swim_frame(
+            koi_development,
+            KoiBody::default(),
+            Behavior::Cruise,
+            peak_frame,
+        ))
+        .iter()
+        .filter(|pixel| colors.contains(pixel))
+        .count()
+    };
+    let marks_for = |week| count_colors(&develop_with_water(week, 3), &WATER_MARK_COLORS);
+    assert_eq!(marks_for(0), 0);
+    assert!(0 < marks_for(1));
+    assert!(marks_for(5) < marks_for(20));
+    assert!(marks_for(20) < marks_for(100));
+    assert_eq!(marks_for(100), marks_for(5_000));
+    let wake_for = |day| count_colors(&develop_with_water(20, day), &WAKE_COLORS);
+    assert!(0 < wake_for(0), "a quiet day leaves no wake at all");
+    assert!(wake_for(0) < wake_for(3));
+    assert!(wake_for(3) < wake_for(10));
+    assert_eq!(wake_for(10), wake_for(500));
+}
+
+#[test]
 fn a_stroke_leaves_a_wake_and_a_glide_none() {
-    let koi_development = read_fixture_development();
+    let koi_development = develop_with_water(20, 10);
     let wake_pixel_count = |behavior, frame_index| {
         pixels(&render_swim_frame(
             &koi_development,
@@ -287,6 +320,17 @@ fn every_behavior_encodes_as_a_gif_with_a_full_pond() {
             .collect();
         assert!(encode_gif(&swim_frames).is_ok(), "{behavior:?}");
     }
+}
+
+/// The fixture development with the given contributions in the pond's week and on the
+/// observation date, which set the water.
+fn develop_with_water(week_contributions: u64, day_contributions: u64) -> KoiDevelopment {
+    let mut koi_development = read_fixture_development();
+    koi_development.recent_activity.recent_contributions = week_contributions;
+    koi_development
+        .recent_activity
+        .observation_week_contributions = vec![day_contributions];
+    koi_development
 }
 
 /// The fixture development with a week of activity, oldest first, ending on the

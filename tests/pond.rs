@@ -4,16 +4,61 @@ use chrono::Days;
 use git_koi::history::{AccountSnapshot, DayActivity};
 use git_koi::koi::{KoiDevelopment, derive_koi_development};
 use git_koi::pond::{
-    Pond, PondObject, PondObjectKind, PondObjectSize, SLOT_COUNT, VARIANT_COUNT, lay_out_pond,
+    FULL_WAKE_CONTRIBUTIONS, FULL_WATER_CONTRIBUTIONS, MAX_MARK_COUNT, PondObject, PondObjectKind,
+    PondObjectSize, QUIET_WAKE_SCALE, SLOT_COUNT, VARIANT_COUNT, lay_out_pond,
 };
 
 #[test]
-fn a_quiet_week_leaves_an_empty_pond() {
-    assert_eq!(lay_out_pond(&develop_with_week(&[])), Pond::default());
-    assert_eq!(
+fn a_quiet_week_leaves_a_pond_without_objects() {
+    for quiet_pond in [
+        lay_out_pond(&develop_with_week(&[])),
         lay_out_pond(&develop_with_week(&[(0, 0), (0, 0), (0, 0)])),
-        Pond::default()
+    ] {
+        assert!(quiet_pond.lily_pads.is_empty());
+        assert!(quiet_pond.rocks.is_empty());
+    }
+}
+
+#[test]
+fn water_follows_the_weeks_and_the_days_contributions() {
+    let water_for = |week_contributions: u64, day_contributions: u64| {
+        let mut koi_development = develop_with_week(&[]);
+        koi_development.recent_activity.recent_contributions = week_contributions;
+        koi_development
+            .recent_activity
+            .observation_week_contributions = vec![day_contributions];
+        lay_out_pond(&koi_development).water
+    };
+    assert_eq!(water_for(0, 0).mark_count, 0);
+    assert!((2..=3).contains(&water_for(5, 0).mark_count));
+    assert!((7..=9).contains(&water_for(20, 0).mark_count));
+    assert_eq!(
+        water_for(FULL_WATER_CONTRIBUTIONS, 0).mark_count,
+        MAX_MARK_COUNT
     );
+    assert_eq!(water_for(10_000, 0).mark_count, MAX_MARK_COUNT);
+    assert!(
+        (0..=FULL_WATER_CONTRIBUTIONS)
+            .map(|week| water_for(week, 0).mark_count)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1])
+    );
+
+    assert_eq!(water_for(0, 0).wake_scale, QUIET_WAKE_SCALE);
+    let busy_day = water_for(0, FULL_WAKE_CONTRIBUTIONS).wake_scale;
+    assert!((busy_day - 1.0).abs() < 1e-9);
+    assert_eq!(water_for(0, 1_000).wake_scale, busy_day);
+    let middling = water_for(0, 3).wake_scale;
+    assert!(QUIET_WAKE_SCALE < middling && middling < 1.0);
+
+    // Without any observed day, the wake is the quiet one.
+    let mut unobserved = develop_with_week(&[]);
+    unobserved
+        .recent_activity
+        .observation_week_contributions
+        .clear();
+    assert_eq!(lay_out_pond(&unobserved).water.wake_scale, QUIET_WAKE_SCALE);
 }
 
 #[test]

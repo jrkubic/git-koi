@@ -6,10 +6,12 @@
 //! least one pull request settles one rock. The day's count sets the object's size, and
 //! the objects take slots in order of age, newest first, so a burst of activity stays
 //! in the pond for a week and then drifts off. The account seed picks each slot's
-//! shape variant, so two accounts' ponds differ. Where the slots sit, and how large
-//! each size is, belongs to [`crate::render`].
+//! shape variant, so two accounts' ponds differ. The water itself follows the
+//! contributions: marks of moving water rise with the week's total, and the koi's wake
+//! with the day's. Where the slots sit, how large each size is, and how the water is
+//! drawn belong to [`crate::render`].
 
-use crate::koi::KoiDevelopment;
+use crate::koi::{KoiDevelopment, RecentActivity};
 
 /// What a pond object is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,13 +50,35 @@ pub struct PondObject {
 }
 
 /// The day's pond.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pond {
     /// Newest first; each slot is its index here.
     pub lily_pads: Vec<PondObject>,
     /// Newest first; each slot is its index here.
     pub rocks: Vec<PondObject>,
+    /// How the water moves.
+    pub water: Water,
 }
+
+/// How the water moves, from the account's recent contributions.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Water {
+    /// Marks of moving water across the pond: none after a week without
+    /// contributions, up to [`MAX_MARK_COUNT`] at [`FULL_WATER_CONTRIBUTIONS`] or more.
+    pub mark_count: usize,
+    /// The share of its full wake the koi leaves, from [`QUIET_WAKE_SCALE`] on a day
+    /// without contributions through one at [`FULL_WAKE_CONTRIBUTIONS`] or more.
+    pub wake_scale: f64,
+}
+
+/// The most marks the water shows.
+pub const MAX_MARK_COUNT: usize = 20;
+/// Contributions in the pond's week at which the marks reach their most.
+pub const FULL_WATER_CONTRIBUTIONS: u64 = 100;
+/// Contributions on the observation date at which the wake reaches its fullest.
+pub const FULL_WAKE_CONTRIBUTIONS: u64 = 10;
+/// The wake left on a day without contributions.
+pub const QUIET_WAKE_SCALE: f64 = 0.25;
 
 /// Slots for each kind; the pond's week never needs more.
 pub const SLOT_COUNT: usize = 8;
@@ -70,10 +94,15 @@ const LARGE_COUNT: u32 = 4;
 /// one of each. The object's size is small for one, medium for two or three, and
 /// large for four or more. Its slot is its index among its kind, so the newest object
 /// of each kind takes slot zero. Its variant comes from the account seed and the slot.
-/// A development without daily activity gives an empty pond. This reads no clock and
-/// changes nothing on the koi.
+/// A development without daily activity gives a pond without objects. The water
+/// comes from the recent activity: marks rise with the week's contributions on a
+/// diminishing curve, and the wake with the observation date's, both from quiet to
+/// full. This reads no clock and changes nothing on the koi.
 pub fn lay_out_pond(koi_development: &KoiDevelopment) -> Pond {
-    let mut pond = Pond::default();
+    let mut pond = Pond {
+        water: measure_water(&koi_development.recent_activity),
+        ..Pond::default()
+    };
     for day_activity in koi_development.daily_activity.iter().rev() {
         let age_days = (koi_development.observed_on - day_activity.date)
             .num_days()
@@ -104,6 +133,35 @@ pub fn lay_out_pond(koi_development: &KoiDevelopment) -> Pond {
         }
     }
     pond
+}
+
+/// Both curves are logarithms, so the first contributions change the water most.
+fn measure_water(recent_activity: &RecentActivity) -> Water {
+    const MARK_CURVE_CONTRIBUTIONS: f64 = 20.0;
+    const WAKE_CURVE_CONTRIBUTIONS: f64 = 2.0;
+    let diminishing = |contributions: u64, full_contributions: u64, curve: f64| {
+        (1.0 + contributions.min(full_contributions) as f64 / curve).ln()
+            / (1.0 + full_contributions as f64 / curve).ln()
+    };
+    let week_fraction = diminishing(
+        recent_activity.recent_contributions,
+        FULL_WATER_CONTRIBUTIONS,
+        MARK_CURVE_CONTRIBUTIONS,
+    );
+    let day_contributions = recent_activity
+        .observation_week_contributions
+        .last()
+        .copied()
+        .unwrap_or(0);
+    let day_fraction = diminishing(
+        day_contributions,
+        FULL_WAKE_CONTRIBUTIONS,
+        WAKE_CURVE_CONTRIBUTIONS,
+    );
+    Water {
+        mark_count: (MAX_MARK_COUNT as f64 * week_fraction).round() as usize,
+        wake_scale: QUIET_WAKE_SCALE + (1.0 - QUIET_WAKE_SCALE) * day_fraction,
+    }
 }
 
 fn size_for_count(day_count: u32) -> PondObjectSize {
